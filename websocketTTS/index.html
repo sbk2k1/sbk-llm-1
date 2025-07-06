@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Voice Transcription</title>
+    <script src="https://cdn.jsdelivr.net/npm/recordrtc@5.6.2/RecordRTC.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+        }
+        #status {
+            padding: 12px;
+            margin: 15px 0;
+            border-radius: 6px;
+            font-weight: bold;
+            text-align: center;
+        }
+        .recording {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        .paused {
+            background-color: #fff8e1;
+            color: #f57f17;
+        }
+        .stopped {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        #transcript {
+            width: 100%;
+            height: 200px;
+            margin: 15px 0;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 16px;
+            resize: vertical;
+        }
+        .button-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            justify-content: center;
+        }
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        #startBtn {
+            background-color: #2e7d32;
+            color: white;
+        }
+        #startBtn:hover {
+            background-color: #1b5e20;
+        }
+        #stopBtn {
+            background-color: #c62828;
+            color: white;
+        }
+        #stopBtn:hover {
+            background-color: #b71c1c;
+        }
+        button:disabled {
+            background-color: #bdbdbd !important;
+            cursor: not-allowed;
+        }
+        .info {
+            margin-top: 20px;
+            padding: 12px;
+            background-color: #e3f2fd;
+            border-radius: 6px;
+            color: #1565c0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-Time Voice Transcription</h1>
+    
+    <div id="status" class="stopped">Status: Ready</div>
+    
+    <div class="button-container">
+        <button id="startBtn">Start Recording</button>
+        <button id="stopBtn" disabled>Stop Recording</button>
+    </div>
+    
+    <textarea id="transcript" placeholder="Your transcription will appear here..." readonly></textarea>
+    
+    <div class="info">
+        <p>• Click "Start Recording" to begin voice capture</p>
+        <p>• Speak clearly into your microphone</p>
+        <p>• Click "Stop Recording" or stay silent for 5 seconds to end</p>
+    </div>
+
+    <script>
+        // DOM Elements
+        const statusEl = document.getElementById('status');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const transcriptEl = document.getElementById('transcript');
+
+        // Audio Variables
+        let recorder;
+        let audioStream;
+        let ws;
+        let silenceTimer;
+        const SILENCE_TIMEOUT = 5000; // 5 seconds
+
+        // WebSocket Connection
+        function setupWebSocket() {
+            // Replace with your WebSocket server URL
+            ws = new WebSocket('ws://localhost:8080');
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                updateStatus('recording');
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'interim') {
+                    // Show real-time transcription
+                    transcriptEl.value = data.text;
+                } else if (data.type === 'final') {
+                    // Append final transcription
+                    transcriptEl.value += data.text + '\n';
+                } else if (data.type === 'error') {
+                    showError(data.message);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                showError('Connection error');
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                if (statusEl.className !== 'stopped') {
+                    updateStatus('stopped');
+                }
+            };
+        }
+
+        // Start Recording
+        async function startRecording() {
+            try {
+                // Request microphone access
+                audioStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        sampleRate: 16000
+                    } 
+                });
+                
+                setupWebSocket();
+                
+                // Initialize recorder
+                recorder = new RecordRTC(audioStream, {
+                    type: 'audio',
+                    mimeType: 'audio/wav',
+                    recorderType: RecordRTC.StereoAudioRecorder,
+                    timeSlice: 250, // Send chunks every 250ms
+                    desiredSampRate: 16000,
+                    numberOfAudioChannels: 1,
+                    
+                    ondataavailable: async (blob) => {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            try {
+                                const buffer = await blob.arrayBuffer();
+                                ws.send(new Uint8Array(buffer));
+                                resetSilenceTimer();
+                            } catch (error) {
+                                console.error('Error sending audio:', error);
+                            }
+                        }
+                    },
+                    
+                    onSilence: () => {
+                        if (statusEl.className === 'recording') {
+                            updateStatus('paused');
+                        }
+                    }
+                });
+                
+                // Start recording
+                recorder.startRecording();
+                updateStatus('recording');
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                transcriptEl.value = ''; // Clear previous transcript
+                resetSilenceTimer();
+                
+            } catch (error) {
+                console.error('Recording error:', error);
+                showError('Microphone access denied');
+            }
+        }
+
+        // Stop Recording
+        function stopRecording() {
+            clearTimeout(silenceTimer);
+            
+            if (recorder) {
+                recorder.stopRecording(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ action: 'end_stream' }));
+                        ws.close();
+                    }
+                    
+                    if (audioStream) {
+                        audioStream.getTracks().forEach(track => track.stop());
+                    }
+                    
+                    updateStatus('stopped');
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+                });
+            }
+        }
+
+        // Helper Functions
+        function resetSilenceTimer() {
+            clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(() => {
+                if (statusEl.className === 'recording' || statusEl.className === 'paused') {
+                    stopRecording();
+                    transcriptEl.value += '\n[System: Recording stopped after 5 seconds of silence]\n';
+                }
+            }, SILENCE_TIMEOUT);
+        }
+
+        function updateStatus(state) {
+            statusEl.className = state;
+            const statusMap = {
+                recording: 'Recording...',
+                paused: 'Paused (silence detected)',
+                stopped: 'Ready',
+                error: 'Error'
+            };
+            statusEl.textContent = `Status: ${statusMap[state]}`;
+        }
+
+        function showError(message) {
+            statusEl.className = 'error';
+            statusEl.textContent = `Error: ${message}`;
+            transcriptEl.value += `\n[Error: ${message}]\n`;
+        }
+
+        // Event Listeners
+        startBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            }
+            if (recorder) {
+                recorder.stopRecording();
+            }
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+            }
+        });
+    </script>
+</body>
+</html>

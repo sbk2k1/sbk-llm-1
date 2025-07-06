@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+langchain
+openai
+pydantic
+python-multipart
+unstructured
+sentence-transformers
+faiss-cpu
+aiofiles
+tiktoken
+httpx
